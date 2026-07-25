@@ -6,8 +6,6 @@
 
 线上地址：<https://origin.hassis.top>
 
-https://github.com/jeffreyrobeson/vanke-origin/blob/main/7731E08C31D026E08ECB4A3723CA81DE.png
-
 ## 功能亮点
 
 - **楼栋销控与房源实时公示**：3# / 4# / 5# / 6# 销控图，按楼层、户型、状态
