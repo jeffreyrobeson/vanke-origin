@@ -1,0 +1,12 @@
+[Unit]
+Description=Vanke Origin 住建局销控数据每日抓取+构建+部署
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/vanke-origin
+ExecStart=/root/vanke-origin/deploy/refresh.sh
+StandardOutput=append:/root/vanke-origin/backend/fetcher.log
+StandardError=append:/root/vanke-origin/backend/fetcher.log

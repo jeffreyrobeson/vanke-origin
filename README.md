@@ -77,6 +77,83 @@ cp -r dist/* /www/wwwroot/origin.hassis.top/
 # 修改 HTML 后建议在 EdgeOne 控制台 Purge 一次根路径缓存
 ```
 
+## 真实数据每日刷新
+
+销控数据自采集后会逐渐过期（住宅网签、备案状态会实时变动）。为保证 `origin.hassis.top`
+反映住建局最新公示，本项目落地了「定时缓存 + SQLite + 重新构建」的全自动刷新链路：
+
+```
+systemd timer (每日 03:17)
+  └─ deploy/refresh.sh  (set -euo pipefail，任一步失败即中止，保留旧线上文件)
+      ├─ backend/fetcher.py once   → 拉 4 栋楼全量销控 → 写 backend/sales.db (SQLite)
+      │                            → 原子 os.replace 覆盘 data/sales-control.json
+      ├─ npm run build             → 重新构建 dist/（JSON 在构建期打进 bundle）
+      └─ cp -r dist/* /www/wwwroot/origin.hassis.top/   → 部署到 nginx root
+```
+
+### 数据采集（backend/fetcher.py）
+
+只用 Python 标准库（`urllib.request` + `sqlite3`），**无需 pip 安装任何包**。
+四个住建局公开 API 无需验证码：
+
+- 项目基本信息：`fdcxmjbxx.ashx?sProjectId=<id>`（项目名 / preSellNo / 开发商 / 销控汇总）
+- 楼栋列表：`xmldxx.ashx?sProjectId=<id>&sPreSellNo=<presell>`（取 buildingId）
+- 逐套销控：`xmxkbxx.ashx?sProjectId=<id>&sPreSellNo=<presell>&buildingId=<bid>`（按楼层 group）
+
+四个楼栋的 `sProjectId` 硬编码在 `BUILDINGS` 常量里，与前端 `OFFICIAL_BASIC` 一一对应。
+抓取时每栋间隔 1s 礼貌等待，全量 1027 套约 20–30s。
+
+状态映射与官方 `totalSaleNum` 已对齐：
+`pactStatus` 1=可售/预售可售 | 2=已认购 | 3=已签约 | 5=已备案；
+`pledgeStatus` 2=已抵押 | 0=无；`closed=1` 查封；`preSellStatus` 0=非预售配套。
+「已售 = registered + contracted + subscribed」。非住宅单元 `status="non-residential"`、
+`statusKey="other"`，与前端 `STATUS_META` 索引一致。
+
+用法：
+
+```bash
+cd /root/vanke-origin
+/usr/bin/python3 backend/fetcher.py once    # 拉取 + 写 SQLite + 覆盘 JSON
+/usr/bin/python3 backend/fetcher.py dump    # 仅从 SQLite 重新导出 JSON（不重新拉取）
+```
+
+> ⚠️ ExecStart / 脚本里必须用绝对路径 `/usr/bin/python3`，不能写裸 `python3`：
+> 本机 root 交互 PATH 里 `python3` 命中 node venv，裸调用会跑错解释器。
+
+### 容灾与回滚
+
+- **fetcher 失败不动旧数据**：`fetch_once()` 失败时不覆盖 SQLite，`dump_json()` 用
+  临时文件 + `os.replace` 原子替换 `data/sales-control.json`，任何中途异常都保留旧 JSON。
+- **refresh.sh 任一步失败即中止**：`set -euo pipefail` 保证 fetcher 失败时不会用旧 JSON
+  重新构建（虽然理论上旧 JSON 也能构建），更不会在 build 失败时覆盖 nginx root。
+  站点持续使用上一次成功的数据，日志记录失败原因。
+- **日志**：systemd 的 `StandardOutput/Error=append:` 写入 `backend/fetcher.log`，
+  可 `tail -f backend/fetcher.log` 跟踪。`fetch_log` 表也记录每次抓取的成败/套数。
+
+### systemd 部署
+
+repo 内 `deploy/` 自带三件套，生效副本需 cp 到 `/etc/systemd/system/`：
+
+```bash
+cp deploy/vanke-origin-fetcher.{service,timer} /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now vanke-origin-fetcher.timer
+systemctl list-timers vanke-origin-fetcher.timer          # 确认 NEXT 指向次日 03:17±10m
+systemctl start vanke-origin-fetcher.service              # 手动触发一次看日志
+tail -30 backend/fetcher.log
+```
+
+timer 配置：`OnCalendar=*-*-* 03:17`、`Persistent=true`（错过的定时点开机补跑）、
+`RandomizedDelaySec=10m`（错峰，避免与系统其它 daily 任务挤同一秒）。
+
+### git 与生成产物
+
+- `data/sales-control.json` **进 git**（前端构建期直接读它，作为 seed 数据）；
+  每日刷新会让工作区 dirty，择期手动 commit 留痕，**timer 不自动 commit**。
+- `backend/sales.db`、`backend/fetcher.log` **不进 git**（已由 `.gitignore` 忽略：
+
+  `backend/*.db`、`*.log`），是运行时产物，每台机器各自生成。
+
 > ⚠️ EdgeOne 缓存：HTML 资源带 `Cache-Control: no-cache, must-revalidate`，
 > `/assets/*.{js,css}` 带 immutable 长缓存（文件名含 hash，安全）。
 > 首次部署后 `https://origin.hassis.top/` 若命中 EdgeOne 缓存的旧 404 条目，

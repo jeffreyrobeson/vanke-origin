@@ -1,0 +1,10 @@
+[Unit]
+Description=Vanke Origin 每日数据刷新
+
+[Timer]
+OnCalendar=*-*-* 03:17
+Persistent=true
+RandomizedDelaySec=10m
+
+[Install]
+WantedBy=timers.target
